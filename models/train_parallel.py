@@ -1,5 +1,5 @@
 import torch
-from torch.utils.data import DataLoader
+from torch.utils.data import DataLoader, random_split
 from SequencePointCloudDataset import SequencePointCloudDataset
 from PointEncoderDecoder import PointNetEncoder
 from TransformerEncoder import TransformerEncoder  
@@ -8,30 +8,44 @@ from loss import JointEstimationLoss
 import wandb
 import os
 
+os.environ["CUDA_VISIBLE_DEVICES"] = "0,1"  
+
+
+
 # --- Config ---
-DATA_PATH = "/home/local/ASUAD/agupt374/research_directory/Playground/Kinematic_Modelling/Sequential_Joint_Estimation/data/data_sim"
-CHECKPOINT_PATH = "/home/local/ASUAD/agupt374/research_directory/Playground/Kinematic_Modelling/Sequential_Joint_Estimation/checkpoint/point_encoder_epoch_10.pt"
-SAVE_PATH = "/home/local/ASUAD/agupt374/research_directory/Playground/Kinematic_Modelling/Sequential_Joint_Estimation/checkpoint/final_model"
+DATA_PATH = "/mount/scratch4/anmol/seq_kin/data/data_sim"
+CHECKPOINT_PATH = "/home/local/ASURITE/agupt374/projects/obj_kin/checkpoint/point_encoder_epoch_10.pt"
+SAVE_PATH = "/home/local/ASURITE/agupt374/projects/obj_kin/checkpoint/final_model"
 NUM_POINTS = 40000
 SEQUENCE_LENGTH = 12
 LATENT_DIM = 2048
 MODEL_DIM = 1024
-BATCH_SIZE = 2
-EPOCHS = 50
-LR = 1e-4
+BATCH_SIZE = 8
+EPOCHS = 100
+LR = 1e-5
 MAX_JOINTS = 3
 DEVICE = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
 # --- WandB ---
-# wandb.init(project="kinematic-model", name="full-pipeline-training")
+wandb.init(project="kinematic-model", name="full-pipeline-training:2")
 
 # --- Dataset ---
 dataset = SequencePointCloudDataset(DATA_PATH, num_points=NUM_POINTS, sequence_length=SEQUENCE_LENGTH)
-dataloader = DataLoader(dataset, batch_size=BATCH_SIZE, shuffle=True, num_workers=4)
+train_size = int(0.9 * len(dataset))
+test_size = len(dataset) - train_size
+generator = torch.Generator().manual_seed(42)
+train_dataset, test_dataset = random_split(dataset, [train_size, test_size], generator=generator)
+
+
+train_loader = DataLoader(train_dataset, batch_size=BATCH_SIZE, shuffle=True, num_workers=4)
+test_loader = DataLoader(test_dataset, batch_size=BATCH_SIZE, shuffle=False, num_workers=4)
+
+# dataloader = DataLoader(dataset, batch_size=BATCH_SIZE, shuffle=True, num_workers=4)
 
 # --- Models ---
 encoder = PointNetEncoder(num_points=NUM_POINTS, latent_dim=LATENT_DIM).to(DEVICE)
 encoder.load_state_dict(torch.load(CHECKPOINT_PATH, map_location=DEVICE))
+encoder = torch.nn.DataParallel(encoder)
 encoder.eval()  # frozen
 for param in encoder.parameters():
     param.requires_grad = False
@@ -39,6 +53,11 @@ for param in encoder.parameters():
 transformer = TransformerEncoder(input_dim=LATENT_DIM, model_dim=MODEL_DIM).to(DEVICE)
 joint_param_head = JointParameterHead(input_dim=MODEL_DIM, max_joints=MAX_JOINTS).to(DEVICE)
 joint_delta_predictor = JointDeltaPredictor(model_dim=MODEL_DIM, num_joints=MAX_JOINTS, sequence_length=SEQUENCE_LENGTH).to(DEVICE)
+
+# Move models to DataParallel if multiple GPUs are available
+transformer = torch.nn.DataParallel(transformer)
+joint_param_head = torch.nn.DataParallel(joint_param_head)
+joint_delta_predictor = torch.nn.DataParallel(joint_delta_predictor)
 
 # --- Optimizer & Loss ---
 params = list(transformer.parameters()) + list(joint_param_head.parameters()) + list(joint_delta_predictor.parameters())
@@ -53,7 +72,7 @@ for epoch in range(1, EPOCHS + 1):
     joint_delta_predictor.train()
 
     total_loss = 0.0
-    for batch in dataloader:
+    for batch in train_loader:
         pc_seq, labels = batch  # pc_seq: (B, T, 3, N), labels: dict
         pc_seq = pc_seq.to(DEVICE)
         B, T, C, N = pc_seq.shape
@@ -86,22 +105,29 @@ for epoch in range(1, EPOCHS + 1):
 
         total_loss += loss.item()
         step += 1
-        if step % 10 == 0:
+        
+        if step % 100 == 0:
             print(f"Step {step} - Loss: {loss.item():.4f}")
-            # Log to WandB
-            # wandb.log({"loss/step": loss.item()}, step=step)
-        # wandb.log({f"loss/{k}": v for k, v in loss_dict.items()}, step=step)
+        
+        if step % 10 == 0:
+            wandb.log({f"loss/{k}": v for k, v in loss_dict.items()}, step=step)
 
     # --- Epoch Summary ---
-    avg_loss = total_loss / len(dataloader)
+    avg_loss = total_loss / len(train_loader)
     print(f"Epoch {epoch} - Avg Loss: {avg_loss:.4f}")
-    # wandb.log({"loss/epoch_avg": avg_loss}, step=step)
+    wandb.log({"loss/epoch_avg": avg_loss}, step=step)
 
     # --- Save checkpoint ---
     if epoch % 5 == 0:
-        ckpt_path = os.path.join(SAVE_PATH, f"transformer_epoch_{epoch}.pt")
+        ckpt_path = os.path.join(SAVE_PATH, f"full_model_{epoch}.pt")
         torch.save({
-            "transformer": transformer.state_dict(),
-            "param_head": joint_param_head.state_dict(),
-            "delta_predictor": joint_delta_predictor.state_dict(),
+            "transformer": transformer.module.state_dict(),
+            "param_head": joint_param_head.module.state_dict(),
+            "delta_predictor": joint_delta_predictor.module.state_dict(),
         }, ckpt_path)
+
+
+
+wandb.finish()
+
+

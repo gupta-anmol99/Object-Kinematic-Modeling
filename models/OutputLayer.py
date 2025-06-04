@@ -16,7 +16,11 @@ class JointParameterHead(nn.Module):
 
         # --- Joint Parameter Prediction ---
         self.joint_param_mlp = nn.Sequential(
-            nn.Linear(input_dim, 1024),
+            nn.Linear(input_dim, 512),
+            nn.ReLU(),
+            nn.Linear(512, 512),
+            nn.ReLU(),
+            nn.Linear(512, 1024),
             nn.ReLU(),
             nn.Linear(1024, max_joints * 7),  # 7 params per joint
         )
