@@ -12,7 +12,7 @@ class JointSetDecoder(nn.Module):
     def __init__(
         self,
         d_model=512,
-        num_queries=6,          # K (set to 6 now; you can bump to 8 later for headroom)
+        num_queries=3,          # K (set to 6 now; you can bump to 8 later for headroom)
         nhead=8,
         num_layers=3,
         dim_feedforward=1024,

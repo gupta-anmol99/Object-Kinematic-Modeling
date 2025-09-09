@@ -6,11 +6,13 @@ from models.scripts.SequencePointCloudDataset import SequencePointCloudDataset
 from models.scripts.SequenceEncoder import SequenceEncoder
 from models.scripts.TemporalEncoder import TemporalCLS
 from models.scripts.DETRDecoder import JointSetDecoder, JointSlotHeads
+from models.scripts.matcher import HungarianJointMatcher
+from models.scripts.GTAdapter import parse_gt_batch
 
 def main():
     root_dir = "/home/local/ASUAD/agupt374/research_directory/Playground/Kinematic_Modelling/Sequential_Joint_Estimation/data/data_sim"  
     dataset = SequencePointCloudDataset(root_dir, num_points=10000, sequence_length=12, need_resampling=True)
-    dataloader = DataLoader(dataset, batch_size=4, shuffle=False)
+    dataloader = DataLoader(dataset, batch_size=1, shuffle=False)
 
     # build model
     device = "cuda" if torch.cuda.is_available() else "cpu"
@@ -29,14 +31,16 @@ def main():
 
         with torch.no_grad():
             heads = model(sequences.to(device))  # (B,T,512)
+            # apply GT parsing
+            gt_batch = parse_gt_batch(labels, device=device)
 
         for head in heads:
             print(f"Shape of {head}: {heads[head].shape}")
 
         # print("Heads shape:", heads)  # expect (2, 6, 512)
-        print("joint_count shape:", labels["joint_count"].shape)
-        print("joint_params shape:", labels["joint_params"].shape)
-        print("joint_deltas shape:", labels["joint_deltas"].shape)
+        for gt in gt_batch:
+            print(f"Shape of {gt}: {len(gt_batch[gt])} samples")
+            print(f"{gt}: {gt_batch[gt]}")
         break  # just test first batch
 
 if __name__ == "__main__":
