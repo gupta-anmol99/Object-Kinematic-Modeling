@@ -1,0 +1,33 @@
+import torch
+from torch.utils.data import DataLoader
+
+# import your dataset + sequence encoder
+from models.scripts.SequencePointCloudDataset import SequencePointCloudDataset
+from models.scripts.SequenceEncoder import SequenceEncoder
+
+def main():
+    root_dir = "/home/local/ASUAD/agupt374/research_directory/Playground/Kinematic_Modelling/Sequential_Joint_Estimation/data/data_sim"  
+    dataset = SequencePointCloudDataset(root_dir, num_points=10000, sequence_length=12, need_resampling=True)
+    dataloader = DataLoader(dataset, batch_size=4, shuffle=False)
+
+    # build model
+    device = "cuda" if torch.cuda.is_available() else "cpu"
+    model = SequenceEncoder(use_backbone=True).to(device)
+    model.eval()
+
+    # get one batch
+    for batch in dataloader:
+        sequences, labels = batch   # sequences: (B,T,P,3)
+        print("Input sequences shape:", sequences.shape)
+
+        with torch.no_grad():
+            outputs = model(sequences.to(device))  # (B,T,512)
+
+        print("Sequence CLS output shape:", outputs.shape)  # expect (2, 12, 512)
+        print("joint_count shape:", labels["joint_count"].shape)
+        print("joint_params shape:", labels["joint_params"].shape)
+        print("joint_deltas shape:", labels["joint_deltas"].shape)
+        break  # just test first batch
+
+if __name__ == "__main__":
+    main()
