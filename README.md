@@ -234,3 +234,7 @@ train.py  evaluate.py  infer.py
 
 The simulated objects come from [PartNet-Mobility](https://sapien.ucsd.edu/). The architecture builds on
 [PointNet++](https://arxiv.org/abs/1706.02413) and [DETR](https://arxiv.org/abs/2005.12872).
+
+## License
+
+This code is released under the [MIT License](LICENSE).
