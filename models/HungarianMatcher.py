@@ -1,11 +1,11 @@
 import torch
 import torch.nn.functional as F
 from scipy.optimize import linear_sum_assignment
-from models.scripts.matcher_utils import  build_cost_matrix, match_one_scipy
+from models.matcher_utils import  build_cost_matrix, match_one_scipy
 
 class HungarianJointMatcher:
-    def __init__(self, w_type=1.0, w_angle=1.0, w_point=1.0):
-        self.w_type, self.w_angle, self.w_point = w_type, w_angle, w_point
+    def __init__(self, w_type=1.0, w_angle=1.0, w_point=1.0, w_conf=1.0):
+        self.w_type, self.w_angle, self.w_point, self.w_conf = w_type, w_angle, w_point, w_conf
 
     @torch.no_grad()
     def __call__(self, preds_b, gts_b):
@@ -26,10 +26,12 @@ class HungarianJointMatcher:
                 continue
 
             pred_single = {
-                "axis_dir": axis_dir[b], "anchor_point": anchor[b], "type_logits": type_log[b]
+                "axis_dir": axis_dir[b], "anchor_point": anchor[b], "type_logits": type_log[b],
+                "existence_logits": preds_b["existence_logits"][b],
             }
             C = build_cost_matrix(pred_single, gt_dir, gt_point, gt_type,
-                                  w_type=self.w_type, w_angle=self.w_angle, w_point=self.w_point)  # (K,Mb)
+                                  w_type=self.w_type, w_angle=self.w_angle, w_point=self.w_point,
+                                  w_conf=self.w_conf)  # (K,Mb)
             pairs, unmatched_k = match_one_scipy(C)
             out.append({"pairs": pairs, "unmatched_k": unmatched_k, "M": Mb})
         return out

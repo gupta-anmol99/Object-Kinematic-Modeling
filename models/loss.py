@@ -2,77 +2,122 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 
-class JointEstimationLoss(nn.Module):
-    def __init__(self, max_joints=3, sequence_length=12):
+def point_to_line_sq_distance(p, a, d):
+    # squared distance from p to the line (a, d); d must be unit length
+    v = p - a
+    ortho = v - (v * d).sum(dim=-1, keepdim=True) * d
+    return (ortho * ortho).sum(dim=-1)
+
+class JointSetLoss(nn.Module):
+    def __init__(self,
+                 w_exist=1.0, w_type=1.0, w_axis=1.0, w_point=1.0,
+                 w_rank_l1=1.0, w_rank_pair=0.5, pair_margin=0.1, eos_coef=0.5, w_state=1.0):
         super().__init__()
-        self.ce_loss = nn.CrossEntropyLoss()
-        self.mse_loss = nn.MSELoss()
-        self.bce_loss = nn.BCELoss()
-        self.max_joints = max_joints
-        self.sequence_length = sequence_length
+        self.w_state = w_state
+        self.eos_coef = eos_coef  # weight of "no joint" slots in the confidence BCE (DETR-style)
+        self.w_exist, self.w_type = w_exist, w_type
+        self.w_axis, self.w_point = w_axis, w_point
+        self.w_rank_l1, self.w_rank_pair = w_rank_l1, w_rank_pair
+        self.pair_margin = pair_margin
+        self.ce = nn.CrossEntropyLoss()
 
-    def forward(self, joint_logits, joint_params, joint_deltas,
-                target_joint_count, target_joint_params, target_joint_deltas):
-        """
-        Inputs:
-        - joint_logits: (B, max_joints)
-        - joint_params: (B, max_joints, 7) → [dir (3), point (3), type (1)]
-        - joint_deltas: (B, T, max_joints)
-        - target_joint_count: (B,)
-        - target_joint_params: (B, max_joints, 7)
-        - target_joint_deltas: (B, T, max_joints)
-        """
+    def forward(self, preds, gt_batch, assignments):
+        B, K, _ = preds["axis_dir"].shape
+        device = preds["axis_dir"].device
 
-        # 1. Classification Loss (joint count): logits vs class labels
-        count_loss = self.ce_loss(joint_logits, target_joint_count - 1)
+        exist_losses, type_losses, axis_losses = [], [], []
+        point_losses, rank_l1_losses, rank_pair_losses, state_losses = [], [], [], []
 
-        # 2. Valid mask
-        param_mask = (target_joint_params[:, :, 0] != -1)  # (B, max_joints)
+        for b in range(B):
+            pairs = assignments[b]["pairs"]
+            unmatched_k = assignments[b]["unmatched_k"]
+            Mi = assignments[b]["M"]
 
-        # 3. Direction Loss (cosine similarity)
-        dir_pred = joint_params[:, :, 0:3]
-        dir_true = target_joint_params[:, :, 0:3]
-        dir_true = F.normalize(dir_true, dim=-1)
-        dot_product = F.cosine_similarity(dir_pred, dir_true, dim=-1)  # (B, max_joints)
-        direction_loss = (1 - dot_product[param_mask]).mean()
+            exist_log_b = preds["existence_logits"][b].squeeze(-1)  # (K,)
+            type_log_b  = preds["type_logits"][b]                   # (K,2)
+            axis_b      = F.normalize(preds["axis_dir"][b], dim=-1, eps=1e-6)
+            anchor_b    = preds["anchor_point"][b]
+            order_log_b = preds["order_logits"][b].squeeze(-1)      # (K,)
 
-        # 4. Point Loss (MSE on 3:6)
-        point_pred = joint_params[:, :, 3:6]
-        point_true = target_joint_params[:, :, 3:6]
-        point_loss = self.mse_loss(
-            point_pred[param_mask],
-            point_true[param_mask]
-        )
+            gt_dir   = gt_batch["dir"][b]
+            gt_point = gt_batch["point"][b]
+            gt_type  = gt_batch["type"][b]
+            gt_rank  = gt_batch["rank"][b]
 
-        # 5. Joint Type Loss (BCE on 6)
-        type_pred = joint_params[:, :, 6]
-        type_true = target_joint_params[:, :, 6]
-        type_loss = self.bce_loss(
-            type_pred[param_mask],
-            type_true[param_mask]
-        )
+            # existence: matched -> 1, unmatched -> 0
+            ex_logits, ex_targets = [], []
+            if pairs:
+                k_pos = torch.tensor([k for k, _ in pairs], device=device)
+                ex_logits.append(exist_log_b.index_select(0, k_pos))
+                ex_targets.append(torch.ones_like(k_pos, dtype=torch.float32))
+            if unmatched_k:
+                k_neg = torch.tensor(unmatched_k, device=device)
+                ex_logits.append(exist_log_b.index_select(0, k_neg))
+                ex_targets.append(torch.zeros_like(k_neg, dtype=torch.float32))
+            if ex_logits:
+                ex_logits = torch.cat(ex_logits, 0); ex_targets = torch.cat(ex_targets, 0)
+                w = torch.where(ex_targets > 0, torch.ones_like(ex_targets),
+                                torch.full_like(ex_targets, self.eos_coef))
+                bce = F.binary_cross_entropy_with_logits(ex_logits, ex_targets, reduction="none")
+                exist_losses.append((w * bce).sum() / w.sum())
 
-        # 6. Delta sequence loss (MSE on non-masked entries)
-        delta_mask = (target_joint_deltas != -1)
-        delta_loss = self.mse_loss(
-            joint_deltas[delta_mask],
-            target_joint_deltas[delta_mask]
-        )
+            if Mi == 0 or not pairs:
+                continue
 
-        # Final combined loss (weights can be tuned)
-        total_loss = (
-            0.2 * count_loss +
-            0.3 * direction_loss +
-            0.25 * point_loss +
-            0.1 * type_loss +
-            0.15 * delta_loss
-        )
+            k_idx = torch.tensor([k for k, _ in pairs], device=device)
+            m_idx = torch.tensor([m for _, m in pairs], device=device)
 
-        return total_loss, {
-            "count_loss": count_loss.item(),
-            "direction_loss": direction_loss.item(),
-            "point_loss": point_loss.item(),
-            "type_loss": type_loss.item(),
-            "delta_loss": delta_loss.item(),
-            "total": total_loss.item()
-        }
+            # type CE
+            type_losses.append(self.ce(type_log_b.index_select(0, k_idx),
+                                       gt_type.index_select(0, m_idx)))
+
+            # axis: 1 - |cos|
+            pred_dirs = axis_b.index_select(0, k_idx)
+            gt_dirs   = F.normalize(gt_dir.index_select(0, m_idx), dim=-1, eps=1e-6)
+            cos = (pred_dirs * gt_dirs).sum(-1).clamp(-1, 1)
+            axis_losses.append((1.0 - cos.abs()).mean())
+
+            # point-to-line (MSE of the distance, as in the paper)
+            pred_pts = anchor_b.index_select(0, k_idx)
+            gt_pts   = gt_point.index_select(0, m_idx)
+            point_losses.append(point_to_line_sq_distance(pred_pts, gt_pts, gt_dirs).mean())
+
+            # order: L1 + pairwise ranking
+            s   = torch.sigmoid(order_log_b.index_select(0, k_idx))
+            r_t = gt_rank.index_select(0, m_idx)
+            rank_l1_losses.append(torch.abs(s - r_t).mean())
+
+            if r_t.numel() >= 2:
+                ti = r_t.unsqueeze(1); tj = r_t.unsqueeze(0)
+                mask = (ti < tj)
+                if mask.any():
+                    si = s.unsqueeze(1).expand(-1, s.numel())
+                    sj = s.unsqueeze(0).expand(s.numel(), -1)
+                    pair_loss = F.relu(self.pair_margin - (sj - si))[mask].mean()
+                    rank_pair_losses.append(pair_loss)
+
+            # per-frame joint state (auxiliary decoder), MSE on matched slots
+            if "states" in preds and "state" in gt_batch:
+                pred_states = preds["states"][b].index_select(0, k_idx)          # (M,T,3)
+                gt_states   = gt_batch["state"][b].index_select(0, m_idx)        # (M,T,3)
+                state_losses.append(F.mse_loss(pred_states, gt_states))
+
+        def mean0(xs): 
+            return torch.stack(xs).mean() if xs else torch.zeros((), device=device)
+
+        L_exist = mean0(exist_losses)
+        L_type  = mean0(type_losses)
+        L_axis  = mean0(axis_losses)
+        L_point = mean0(point_losses)
+        L_rL1   = mean0(rank_l1_losses)
+        L_rPair = mean0(rank_pair_losses)
+        L_state = mean0(state_losses)
+
+        total = (self.w_exist*L_exist + self.w_type*L_type + self.w_axis*L_axis +
+                 self.w_point*L_point + self.w_rank_l1*L_rL1 + self.w_rank_pair*L_rPair +
+                 self.w_state*L_state)
+
+        stats = {"exist": L_exist.item(), "type": L_type.item(), "axis": L_axis.item(),
+                 "point": L_point.item(), "rank_l1": L_rL1.item(),
+                 "rank_pair": L_rPair.item(), "state": L_state.item(), "total": total.item()}
+        return total, stats

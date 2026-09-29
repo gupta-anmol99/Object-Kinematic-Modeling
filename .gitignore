@@ -2,3 +2,9 @@
 /wandb/
 /checkpoint/
 your_env_name.yml
+/logs/
+__pycache__/
+/figures/
+/tools/
+/tests/
+/CLAUDE.md

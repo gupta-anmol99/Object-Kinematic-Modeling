@@ -1,7 +1,7 @@
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
-from models.scripts.pointnet_utils import batched_index_points, farthest_point_sampling, ball_query, group_points
+from models.pointnet_utils import batched_index_points, farthest_point_sampling, ball_query, group_points
 
 
 class LocalPointNet(nn.Module):

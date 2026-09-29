@@ -5,8 +5,8 @@ from typing import Optional, Tuple
 
 # Import your existing modules
 # Adjust paths if needed
-from models.scripts.Pointnet2Encoder import PointNet2_SA3
-from models.scripts.FrameEncoder import FrameCLS
+from models.Pointnet2Encoder import PointNet2_SA3
+from models.FrameEncoder import FrameCLS
 
 
 class SequenceEncoder(nn.Module):
@@ -84,7 +84,6 @@ class SequenceEncoder(nn.Module):
             assert seq_in.dim() == 4 and seq_in.size(-1) == 3, \
                 f"Expected (B,T,P,3) when use_backbone=True, got {tuple(seq_in.shape)}"
             B, T, P, _ = seq_in.shape
-            print(f"Input seq_in shape: {seq_in.shape}")
 
             # Flatten over frames to reuse per-frame pipeline
             x = seq_in.reshape(B * T, P, 3)  # (B*T, P, 3)

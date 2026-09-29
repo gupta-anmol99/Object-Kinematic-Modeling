@@ -46,7 +46,7 @@ class TemporalCLS(nn.Module):
                           If provided, we'll pad a False for CLS internally.
         returns:
           enc:    (B, T+1, model_dim)  — encoded sequence incl. CLS at pos 0
-          cls_z:  (B, model_dim)       — sequence embedding (CLS)
+                                         (enc[:, 0] is the sequence embedding, enc[:, 1:] the frames)
         """
         B, T, _ = x.shape
 
@@ -67,5 +67,4 @@ class TemporalCLS(nn.Module):
             kpm[:, 1:] = key_padding_mask  # CLS at index 0 is always unmasked
 
         enc = self.encoder(x, src_key_padding_mask=kpm)  # (B, T+1, D)
-        cls_z = self.out_norm(enc[:, 0, :])              # (B, D)
-        return enc
+        return self.out_norm(enc)                        # pre-norm layers leave the output un-normalized

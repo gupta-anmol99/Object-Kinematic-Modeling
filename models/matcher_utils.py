@@ -8,7 +8,7 @@ def point_to_line_distance(pred_point, gt_point, gt_dir_unit, eps=1e-6):
     ortho = v - proj
     return torch.sqrt((ortho * ortho).sum(dim=-1) + eps)
 
-def build_cost_matrix(pred, gt_dir, gt_point, gt_type, w_type=1.0, w_angle=1.0, w_point=1.0, eps=1e-6):
+def build_cost_matrix(pred, gt_dir, gt_point, gt_type, w_type=1.0, w_angle=1.0, w_point=1.0, w_conf=0.0, eps=1e-6):
     axis_dir = F.normalize(pred["axis_dir"], dim=-1, eps=eps)        # (K,3)
     anchor   = pred["anchor_point"]    # (K,3)
     type_log = pred["type_logits"]     # (K,2)
@@ -35,7 +35,12 @@ def build_cost_matrix(pred, gt_dir, gt_point, gt_type, w_type=1.0, w_angle=1.0, 
         gt_dir.unsqueeze(0).expand(K, M, 3),
     )
 
-    return w_type * type_cost + w_angle * ang_cost + w_point * dists  # (K,M)
+    cost = w_type * type_cost + w_angle * ang_cost + w_point * dists  # (K,M)
+    if w_conf > 0 and "existence_logits" in pred:
+        # DETR-style: prefer confident slots, so duplicates are not matched at random
+        conf = torch.sigmoid(pred["existence_logits"].reshape(K, 1))
+        cost = cost - w_conf * conf
+    return cost
 
 def match_one_scipy(C: torch.Tensor):
     # Solve on CPU/NumPy

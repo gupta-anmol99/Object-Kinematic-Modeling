@@ -12,7 +12,7 @@ class JointSetDecoder(nn.Module):
     def __init__(
         self,
         d_model=512,
-        num_queries=3,          # K (set to 6 now; you can bump to 8 later for headroom)
+        num_queries=6,          # K: must exceed the max joint count so unmatched slots learn "no joint"
         nhead=8,
         num_layers=3,
         dim_feedforward=1024,
@@ -109,3 +109,27 @@ class JointSlotHeads(nn.Module):
             "anchor_point":     anchor_point,       # supervise with point-to-line distance
             "order_logits":     order_logits,       # pass through sigmoid when needed
         }
+
+
+class JointStateHead(nn.Module):
+    """
+    Auxiliary state decoder: per slot and per frame, the joint displacement w.r.t. frame 0.
+    Inputs:
+      slots:  (B, K, D) from the JointSetDecoder
+      frames: (B, T, D) temporal memory without the sequence CLS
+    Output:
+      states: (B, K, T, 3)  revolute -> (sin dθ, cos dθ, 0), prismatic -> (0, 0, dρ)
+    """
+    def __init__(self, d_model=512, hidden=256):
+        super().__init__()
+        self.slot_proj = nn.Linear(d_model, hidden)
+        self.frame_proj = nn.Linear(d_model, hidden)
+        self.mlp = nn.Sequential(
+            nn.ReLU(),
+            nn.Linear(hidden, hidden), nn.ReLU(),
+            nn.Linear(hidden, 3),
+        )
+
+    def forward(self, slots, frames):
+        h = self.slot_proj(slots).unsqueeze(2) + self.frame_proj(frames).unsqueeze(1)  # (B,K,T,H)
+        return self.mlp(h)

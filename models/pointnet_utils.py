@@ -19,12 +19,12 @@ def fixed_resample(xyz, target_n=8192, seed=None):
         idx = np.concatenate([np.arange(N), extra])
     return xyz[idx]
 
-def to_unit_sphere(xyz):
-    center = xyz.mean(axis=0, keepdims=True)
-    xyz0 = xyz - center
-    scale = np.linalg.norm(xyz0, axis=1, keepdims=True).max()
-    scale = max(scale, 1e-6)
-    return xyz0 / scale, center, scale
+def unit_sphere_params(xyz):
+    # center/scale of the unit-sphere normalization, so the same transform can be
+    # applied to every frame of a sequence and to its GT
+    center = xyz.mean(axis=0)
+    scale = max(float(np.linalg.norm(xyz - center, axis=1).max()), 1e-6)
+    return center.astype(np.float32), scale
 
 
 
@@ -74,11 +74,11 @@ def ball_query(xyz, centroids, radius, k):
     M = centroids.shape[1]
     # squared distances (B, M, N)
     dist2 = torch.cdist(centroids, xyz, p=2) ** 2
-    # mask points outside radius
-    mask = dist2 > (radius ** 2)
-    dist2 = dist2.masked_fill(mask, 1e10)
-    # take K nearest within radius
-    idx = torch.topk(dist2, k, dim=-1, largest=False).indices  # (B,M,K)
+    # K nearest; neighbours outside the radius are replaced by the nearest point
+    # (standard PointNet++ padding) instead of pulling in far-away points
+    dist2, idx = torch.topk(dist2, k, dim=-1, largest=False)    # (B,M,K), sorted ascending
+    outside = dist2 > (radius ** 2)
+    idx = torch.where(outside, idx[..., :1].expand_as(idx), idx)
     return idx
 
 def group_points(features, idx):
